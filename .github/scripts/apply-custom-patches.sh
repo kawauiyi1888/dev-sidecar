@@ -9,7 +9,10 @@ if [[ ! -d "$patch_dir" ]]; then
   exit 0
 fi
 
-mapfile -d '' patches < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print0 | sort -z)
+patches=()
+while IFS= read -r patch; do
+  [[ -n "$patch" ]] && patches+=("$patch")
+done < <(find "$patch_dir" -maxdepth 1 -type f -name '*.patch' -print | LC_ALL=C sort)
 if (( ${#patches[@]} == 0 )); then
   echo "No custom patches; using the upstream source unchanged."
   exit 0
