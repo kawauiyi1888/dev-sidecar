@@ -22,7 +22,6 @@ concurrency:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   sync:
@@ -162,13 +161,3 @@ jobs:
             git push origin "${RELEASE_SHA}:refs/tags/${RELEASE_TAG}"
           fi
 
-      - name: Dispatch build and release workflow
-        if: steps.release-check.outputs.needs_sync == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-and-release.yml/dispatches" \
-            -f "ref=${RELEASE_TAG}" \
-            -f 'inputs[signing]=disabled'
-          echo "Dispatched build-and-release for ${GITHUB_REPOSITORY}@${RELEASE_TAG}."
