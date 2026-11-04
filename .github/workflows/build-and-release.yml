@@ -62,6 +62,10 @@ jobs:
           submodules: true
           fetch-depth: 0
 
+      - name: "Apply custom patches"
+        shell: bash
+        run: bash .github/scripts/apply-custom-patches.sh
+
       - name: "Setup pnpm"
         uses: pnpm/action-setup@v5
 
@@ -222,7 +226,7 @@ jobs:
       - name: "npm run electron:build:ci (Windows/macOS)"
         if: ${{ matrix.os != 'ubuntu' }}
         env:
-          VUE_APP_PUBLISH_URL: https://github.com/docmirror/dev-sidecar/releases/download/v${{ steps.package-info.outputs.version }}
+          VUE_APP_PUBLISH_URL: https://github.com/${{ github.repository }}/releases/download/v${{ steps.package-info.outputs.version }}
         run: |
           echo "======================================================================";
           echo "cd packages/gui";
@@ -239,7 +243,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu' || matrix.os == 'ubuntu-24.04-arm' }}
         env:
           DEBUG: "@malept/flatpak-bundler"
-          VUE_APP_PUBLISH_URL: https://github.com/docmirror/dev-sidecar/releases/download/v${{ steps.package-info.outputs.version }}
+          VUE_APP_PUBLISH_URL: https://github.com/${{ github.repository }}/releases/download/v${{ steps.package-info.outputs.version }}
         run: |
           echo "======================================================================";
           echo "cd packages/gui";
