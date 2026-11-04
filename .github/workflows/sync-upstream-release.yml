@@ -1,0 +1,174 @@
+name: Sync Upstream Release
+
+on:
+  schedule:
+    # GitHub-hosted scheduled workflows have a five-minute minimum interval.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional upstream release tag, for example v2.3.5'
+        required: false
+        type: string
+      rebuild_existing:
+        description: 'Rebuild an already existing tag (useful for the first setup)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: upstream-release-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPOSITORY: docmirror/dev-sidecar
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
+      REBUILD_EXISTING: ${{ inputs.rebuild_existing || false }}
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Verify sync token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SYNC_TOKEN}" ]]; then
+            echo 'Repository secret SYNC_TOKEN is required to push workflow files.' >&2
+            exit 1
+          fi
+
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+
+      - name: Resolve upstream release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch upstream master --tags --force
+
+          release_tag="${RELEASE_TAG_INPUT}"
+          if [[ -z "$release_tag" ]]; then
+            release_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          fi
+          if [[ ! "$release_tag" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Unsupported release tag: $release_tag" >&2
+            exit 1
+          fi
+
+          git fetch upstream "refs/tags/${release_tag}:refs/tags/upstream-release/${release_tag}"
+          echo "RELEASE_TAG=${release_tag}" >> "$GITHUB_ENV"
+          echo "Upstream release: ${release_tag}"
+
+      - name: Check whether this release is new
+        id: release-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_exists=false
+          if git ls-remote --exit-code origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            tag_exists=true
+          fi
+          echo "tag_exists=${tag_exists}" >> "$GITHUB_ENV"
+
+          if [[ "$tag_exists" == true && "${REBUILD_EXISTING:-false}" != true ]]; then
+            echo 'needs_sync=false' >> "$GITHUB_OUTPUT"
+            echo "${RELEASE_TAG} already exists in ${GITHUB_REPOSITORY}; nothing to do."
+          else
+            echo 'needs_sync=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync upstream source and prepare release hooks
+        if: steps.release-check.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch master
+
+          # Keep fork-only commits. If the upstream workflow changed in the same
+          # hunk, prefer the upstream file and reapply only our two hooks below.
+          if ! git merge --no-edit upstream/master; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            if (( ${#conflicts[@]} != 1 )) || [[ "${conflicts[0]}" != '.github/workflows/build-and-release.yml' ]]; then
+              echo 'Upstream sync has unresolved conflicts outside the managed release workflow:' >&2
+              printf ' - %s\n' "${conflicts[@]}" >&2
+              git merge --abort || true
+              exit 1
+            fi
+            git checkout --theirs -- .github/workflows/build-and-release.yml
+            git add .github/workflows/build-and-release.yml
+            git commit --no-edit
+          fi
+
+          # The branch follows upstream/master, while the release tag must use
+          # the exact upstream release commit. Capture only fork changes before
+          # creating a temporary release commit on that tag.
+          git diff --binary refs/remotes/upstream/master HEAD -- \
+            ':(exclude).github/workflows/build-and-release.yml' \
+            > "$RUNNER_TEMP/fork-customizations.patch"
+          node .github/scripts/prepare-build-workflow.mjs
+          if [[ -n "$(git status --porcelain -- .github/workflows/build-and-release.yml)" ]]; then
+            git add .github/workflows/build-and-release.yml
+            git commit -m "chore(ci): prepare fork branch hooks"
+            git diff --binary refs/remotes/upstream/master HEAD -- \
+              ':(exclude).github/workflows/build-and-release.yml' \
+              > "$RUNNER_TEMP/fork-customizations.patch"
+          fi
+          master_sha="$(git rev-parse HEAD)"
+
+          git switch --detach "refs/tags/upstream-release/${RELEASE_TAG}"
+          if [[ -s "$RUNNER_TEMP/fork-customizations.patch" ]]; then
+            git apply --3way "$RUNNER_TEMP/fork-customizations.patch"
+          fi
+          node .github/scripts/prepare-build-workflow.mjs
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add -A
+            git commit -m "chore(ci): prepare fork release ${RELEASE_TAG}"
+          fi
+
+          release_sha="$(git rev-parse HEAD)"
+          echo "MASTER_SHA=${master_sha}" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=${release_sha}" >> "$GITHUB_ENV"
+          # The fork inherits upstream tags. A manual rebuild is the only path
+          # allowed to replace one; normal polling creates a new tag only once.
+          git tag -f "${RELEASE_TAG}" "$release_sha"
+
+      - name: Push synchronized branch and release tag
+        if: steps.release-check.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "${MASTER_SHA}:refs/heads/master"
+          if [[ "${tag_exists}" == true ]]; then
+            git push --force origin "${RELEASE_SHA}:refs/tags/${RELEASE_TAG}"
+          else
+            git push origin "${RELEASE_SHA}:refs/tags/${RELEASE_TAG}"
+          fi
+
+      - name: Dispatch build and release workflow
+        if: steps.release-check.outputs.needs_sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-and-release.yml/dispatches" \
+            -f "ref=${RELEASE_TAG}" \
+            -f 'inputs[signing]=disabled'
+          echo "Dispatched build-and-release for ${GITHUB_REPOSITORY}@${RELEASE_TAG}."
