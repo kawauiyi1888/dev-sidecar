@@ -18,10 +18,14 @@ Keep custom behavior in patches rather than editing upstream files directly. The
 
 ## Manual operation
 
+Before the first scheduled run, create the repository Actions secret `SYNC_TOKEN`. It must be a PAT that can write this repository and has permission to create or update files under `.github/workflows/` (`workflow` scope for a classic PAT; the equivalent workflow/content permissions for a fine-grained PAT). The workflow uses this secret for checkout, branch/tag pushes, and dispatching the build workflow. The default `GITHUB_TOKEN` cannot push workflow-file changes.
+
+The secret value is encrypted by GitHub and is never committed to this repository. Do not paste it into a patch, workflow, issue, or log. If a PAT has been exposed, revoke it and create a replacement before updating `SYNC_TOKEN`.
+
 Use **Actions → Sync Upstream Release → Run workflow**:
 
-- Leave `release_tag` empty to process the newest stable upstream release.
+- Leave `release_tag` empty to process the newest stable release.
 - Set `release_tag` to a specific `v*` tag to rebuild that release.
 - Set `rebuild_existing` only when intentionally replacing an existing fork tag.
 
-The PAT used during setup is not stored in the repository or workflow. Runtime pushes and workflow dispatches use the repository-scoped `GITHUB_TOKEN`.
+The repository secret `SYNC_TOKEN` is used only at runtime; it is not stored in the repository or workflow files.

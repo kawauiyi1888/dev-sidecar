@@ -31,14 +31,24 @@ jobs:
       UPSTREAM_REPOSITORY: docmirror/dev-sidecar
       RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
       REBUILD_EXISTING: ${{ inputs.rebuild_existing || false }}
-      GH_TOKEN: ${{ github.token }}
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
       GIT_TERMINAL_PROMPT: '0'
     steps:
+      - name: Verify sync token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SYNC_TOKEN}" ]]; then
+            echo 'Repository secret SYNC_TOKEN is required to push workflow files.' >&2
+            exit 1
+          fi
+
       - name: Checkout fork
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure Git
         shell: bash
